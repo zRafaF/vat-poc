@@ -27,3 +27,21 @@ To know what adapter you are using you can ping the robot
 ``` bash
 ip route get 192.168.123.161
 ```
+
+
+### Onboard computer
+
+The onboard computer is running ubuntu and you can connect to it using ssh
+
+``` bash
+ssh unitree@192.168.123.18
+```
+
+Password: 123
+
+
+## 360 cam
+
+We are using the Ricoh Theta X camera.
+
+If the stream is not working you can try downloading the drivers from the website https://support.ricoh360.com/faq/v-view-003
