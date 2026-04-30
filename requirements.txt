@@ -3,3 +3,4 @@ opencv-python
 cyclonedds == 0.10.2
 pyzmq
 zlib
+protobuf
