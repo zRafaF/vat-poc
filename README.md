@@ -40,8 +40,22 @@ ssh unitree@192.168.123.18
 Password: 123
 
 
+#### Threaded Internet
+
+To share internet between the robot and your computer you can use a wired connection and enable internet sharing on your computer. You do this by going into control panel > network and internet > network and sharing center > change adapter settings.
+
+You might need to enable routing on the onboard computer by running the following command
+
+``` bash
+sudo ip route add default via 192.168.123.122
+```
+
+
 ## 360 cam
 
 We are using the Ricoh Theta X camera.
 
 If the stream is not working you can try downloading the drivers from the website https://support.ricoh360.com/faq/v-view-003
+
+
+
