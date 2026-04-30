@@ -9,6 +9,8 @@ import queue
 
 from unitree_sdk2py.core.channel import ChannelSubscriber, ChannelFactoryInitialize
 from unitree_sdk2py.idl.sensor_msgs.msg.dds_ import PointCloud2_
+from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowState_
+from unitree_sdk2py.idl.geometry_msgs.msg.dds_ import PoseStamped_
 
 PC_IP = "192.168.123.122"
 PORT = 5555
@@ -16,9 +18,11 @@ PORT = 5555
 class LidarTCPStreamer:
     def __init__(self):
         self.count = 0
-        # Queue size 1 ensures we drop old frames and only send the newest
-        # if the network is slower than the sensor.
         self.frame_queue = queue.Queue(maxsize=1) 
+        
+        # State variables to hold the latest data
+        self.latest_lowstate = None
+        self.latest_pose = None
         
         # Start the persistent network thread
         self.net_thread = threading.Thread(target=self._network_loop, daemon=True)
@@ -27,21 +31,19 @@ class LidarTCPStreamer:
     def _network_loop(self):
         sock = None
         while True:
-            # 1. Reconnection Logic
             try:
                 if sock is None:
                     print(f"[Network] Attempting to connect to {PC_IP}:{PORT}...")
                     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.settimeout(2.0) # 2-second timeout so it doesn't hang forever
+                    sock.settimeout(2.0)
                     sock.connect((PC_IP, PORT))
-                    sock.settimeout(None) # Back to blocking mode for sending
+                    sock.settimeout(None)
                     print("[Network] Successfully connected to PC!")
             except Exception:
                 sock = None
-                time.sleep(1) # Wait before retrying
+                time.sleep(1)
                 continue
 
-            # 2. Sending Logic
             try:
                 # Wait for a frame from the LiDAR callback
                 msg, current_count = self.frame_queue.get(timeout=1.0)
@@ -49,44 +51,69 @@ class LidarTCPStreamer:
                 raw_bytes = bytes(msg.data)
                 compressed_data = zlib.compress(raw_bytes, level=3)
                 
+                # Bundle the latest motor, IMU, and pose data into the JSON header
                 header_dict = {
                     "frame": current_count,
-                    "point_step": msg.point_step
+                    "point_step": msg.point_step,
+                    "robot_state": self.latest_lowstate,
+                    "robot_pose": self.latest_pose
                 }
+                
                 header_bytes = json.dumps(header_dict).encode('utf-8')
                 
-                # Frame the message
+                # Frame the message: [Header Size] [Payload Size] [Header JSON] [Compressed LiDAR]
                 sizes_frame = struct.pack(">II", len(header_bytes), len(compressed_data))
                 
-                # Send it all
                 sock.sendall(sizes_frame + header_bytes + compressed_data)
                 
             except queue.Empty:
-                pass # No data from LiDAR yet, just loop
+                pass 
             except Exception as e:
                 print(f"[Network] Connection lost ({e}). Retrying...")
                 sock.close()
                 sock = None
 
     def Init(self):
+        # 1. LiDAR Subscriber
         self.lidar_subscriber = ChannelSubscriber("rt/utlidar/cloud", PointCloud2_)
         self.lidar_subscriber.Init(self.LidarMessageHandler, 10)
+        
+        # 2. Motor & IMU Subscriber
+        self.state_subscriber = ChannelSubscriber("rt/lowstate", LowState_)
+        self.state_subscriber.Init(self.StateHandler, 10)
+
+        # 3. Robot Pose Subscriber
+        self.pose_subscriber = ChannelSubscriber("rt/utlidar/robot_pose", PoseStamped_)
+        self.pose_subscriber.Init(self.PoseHandler, 10)
 
     def Start(self):
-        print("LiDAR Streamer Started. Waiting for data...")
+        print("Multimodal Streamer Started. Waiting for data...")
+
+    def StateHandler(self, msg: LowState_):
+        # Extract the joint angles (q) for all 12 motors
+        motors = [msg.motor_state[i].q for i in range(12)]
+        
+        # Extract the IMU data
+        imu = {
+            "quaternion": list(msg.imu_state.quaternion),
+            "gyroscope": list(msg.imu_state.gyroscope),
+            "accelerometer": list(msg.imu_state.accelerometer)
+        }
+        
+        self.latest_lowstate = {
+            "motors": motors,
+            "imu": imu
+        }
+
+    def PoseHandler(self, msg: PoseStamped_):
+        self.latest_pose = {
+            "position": [msg.pose.position.x, msg.pose.position.y, msg.pose.position.z],
+            "orientation": [msg.pose.orientation.x, msg.pose.orientation.y, msg.pose.orientation.z, msg.pose.orientation.w]
+        }
 
     def LidarMessageHandler(self, msg: PointCloud2_):
         self.count += 1
         
-        # --- ADD THIS TO VERIFY THE DATA STRUCTURE ---
-        if self.count == 1:
-            print("\n--- PointCloud2 Data Layout ---")
-            for field in msg.fields:
-                print(f"Field: '{field.name}' | Offset: {field.offset} bytes | Datatype: {field.datatype}")
-            print(f"Point Step (Total bytes per point): {msg.point_step}")
-            print("-------------------------------\n")       
-             
-        # Push to queue. If queue is full, drop the oldest frame.
         if self.frame_queue.full():
             try:
                 self.frame_queue.get_nowait()
